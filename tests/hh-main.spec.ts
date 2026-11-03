@@ -52,8 +52,14 @@ test.describe('vladivostok.hh.ru — главная страница', () => {
     await expect(mainPage.footerPostVacancyLink).toHaveAttribute('href', /\/employer/);
   });
 
-  test('10. Копирайт «ООО «Хэдхантер»» в футере', async () => {
+    test('10. Копирайт «ООО «Хэдхантер»» в футере', async () => {
     await mainPage.scrollToBottom();
     await expect(mainPage.copyright).toBeVisible();
+  });
+
+  test('11. Ввод текста в поле поиска', async () => {
+    const query = 'Тестировщик';
+    await mainPage.searchInput.fill(query);
+    await expect(mainPage.searchInput).toHaveValue(query);
   });
 });
