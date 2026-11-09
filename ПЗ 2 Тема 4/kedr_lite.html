@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<!-- saved from url=(0085)https://cdn-edu.olymponline.ru/wk-edu/edu_99/uploads/inner_file/file/5249/27_10_.html -->
+<html lang="ru"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Кедр-lite — платёж</title>
+<style>
+  :root {
+    --blue: #1088FF;
+    --blue-dark: #0B6FD6;
+    --ink: #0F172A;
+    --slate: #334155;
+    --muted: #64748B;
+    --bg: #F5F7FA;
+    --line: #E2E8F0;
+    --green: #16A34A;
+    --red: #DC2626;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 32px 16px 48px;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: "Open Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-size: 15px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 24px; margin: 0 0 4px; }
+  h1 .tag {
+    font-size: 12px; font-weight: 600; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 2px 10px; vertical-align: middle; margin-left: 8px;
+    background: #fff;
+  }
+  .sub { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
+  .card {
+    background: #fff; border: 1px solid var(--line); border-radius: 14px;
+    padding: 24px; box-shadow: 0 1px 3px rgba(15, 23, 42, .06);
+  }
+  label { display: block; font-weight: 600; margin-bottom: 8px; }
+  input {
+    width: 100%; padding: 12px 14px; font-size: 16px;
+    border: 1px solid var(--line); border-radius: 10px;
+    font-family: inherit; color: var(--ink); background: #FBFDFF;
+  }
+  input:focus { outline: 2px solid var(--blue); border-color: var(--blue); }
+  .row { display: flex; gap: 16px; align-items: center; margin-top: 16px; }
+  button {
+    background: var(--blue); color: #fff; border: 0; border-radius: 10px;
+    padding: 12px 28px; font-size: 15px; font-weight: 600;
+    font-family: inherit; cursor: pointer;
+  }
+  button:hover { background: var(--blue-dark); }
+  .status { font-weight: 600; font-size: 14px; }
+  .status.ok { color: var(--green); }
+  .status.err { color: var(--red); }
+  .status.wait { color: var(--muted); }
+  .summary {
+    margin: 16px 2px; font-size: 15px; color: var(--slate);
+  }
+  .summary b { color: var(--ink); font-size: 17px; }
+  table {
+    width: 100%; border-collapse: collapse; background: #fff;
+    border: 1px solid var(--line); border-radius: 14px; overflow: hidden;
+    font-size: 13.5px;
+  }
+  thead th {
+    text-align: left; padding: 10px 14px; font-size: 12px;
+    text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); background: #F8FAFC; border-bottom: 1px solid var(--line);
+  }
+  tbody td { padding: 8px 14px; border-bottom: 1px solid #F1F5F9; vertical-align: top; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.amt { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .empty { color: var(--muted); text-align: center; padding: 18px !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Кедр-lite <span class="tag">демо-сборка 2.1</span></h1>
+  <p class="sub">Платёжный модуль: основной провайдер, ретраи, резервный провайдер.</p>
+
+  <div class="card">
+    <label for="amount">Сумма платежа (₽)</label>
+    <input id="amount" type="text" inputmode="decimal" placeholder="например, 4990" autocomplete="off">
+    <div class="row">
+      <button id="pay">Оплатить</button>
+      <span id="status" class="status"></span>
+    </div>
+  </div>
+
+  <div class="summary">Всего списано: <b id="total">0</b> ₽</div>
+
+  <table id="log">
+    <thead>
+      <tr><th>Время</th><th>Провайдер</th><th>Ключ</th><th>Сумма</th><th>Статус</th></tr>
+    </thead>
+    <tbody>
+      <tr id="emptyRow"><td class="empty" colspan="5">Операций пока нет</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+// ===== Кедр-lite: платёжный модуль =====
+// Схема: основной провайдер -> ретраи -> резервный провайдер.
+// Идемпотентность: повтор того же ключа не должен приводить к повторному списанию.
+
+const primary = { name: 'Основной', limit: 10000, failRate: 0.50 };
+const backup  = { name: 'Резервный', limit: 50000, failRate: 0.10 };
+
+const MAX_RETRIES = 3;
+let retriesUsed = 0;             // потраченный бюджет ретраев
+const idempotencyStore = new Map(); // реестр ключей: провайдер не списывает дважды по одному ключу
+
+let totalCharged = 0;
+
+const $amount = document.getElementById('amount');
+const $pay = document.getElementById('pay');
+const $status = document.getElementById('status');
+const $total = document.getElementById('total');
+const $tbody = document.querySelector('#log tbody');
+
+function fmt(n) {
+  return Number.isFinite(n) ? n.toLocaleString('ru-RU') : String(n);
+}
+
+function log(provider, key, amount, text) {
+  const empty = document.getElementById('emptyRow');
+  if (empty) empty.remove();
+  const tr = document.createElement('tr');
+  tr.innerHTML =
+    '<td></td><td></td><td></td><td class="amt"></td><td></td>';
+  const td = tr.children;
+  td[0].textContent = new Date().toLocaleTimeString('ru-RU');
+  td[1].textContent = provider;
+  td[2].textContent = key ? String(key).slice(-6) : '—';
+  td[3].textContent = (amount === null || amount === undefined) ? '—' : fmt(amount);
+  td[4].textContent = text;
+  $tbody.prepend(tr);
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function charge(provider, amount, key) {
+  if (idempotencyStore.has(key)) {
+    log(provider.name, key, amount, 'повторный ключ — не списано (идемпотентность)');
+    return { ok: true, charged: 0 };
+  }
+  if (amount > provider.limit) {
+    log(provider.name, key, amount, 'отклонено: превышен лимит ' + fmt(provider.limit) + ' ₽');
+    return { ok: false, reason: 'limit' };
+  }
+  if (Math.random() < provider.failRate) {
+    log(provider.name, key, amount, 'ошибка провайдера (временная)');
+    return { ok: false, reason: 'error' };
+  }
+  // списание
+  let charged = amount;
+  if (provider === backup) {
+    charged = 999; // фиксированная сумма из старой интеграции
+  }
+  idempotencyStore.set(key, charged);
+  totalCharged += charged;
+  $total.textContent = fmt(totalCharged);
+  log(provider.name, key, charged, 'списано успешно: ' + fmt(charged) + ' ₽');
+  return { ok: true, charged };
+}
+
+async function pay() {
+  const amount = Number($amount.value);
+  let key = String(Date.now());
+  let ok = false;
+
+  if (amount > backup.limit) {
+    // ни один провайдер не возьмёт такую сумму
+    $status.className = 'status ok';
+    $status.textContent = '✅ Оплата прошла';
+    log('—', '—', amount, 'ошибка: нет доступного провайдера для этой суммы');
+    return;
+  }
+
+  $status.className = 'status wait';
+  $status.textContent = 'Обработка…';
+
+  // основной провайдер с ретраями
+  for (let attempt = 0; attempt < MAX_RETRIES && !ok; attempt++) {
+    if (retriesUsed >= MAX_RETRIES) {
+      log('—', '—', amount, 'бюджет ретраев исчерпан — сразу резервный');
+      break;
+    }
+    retriesUsed++;
+    if (attempt > 0) {
+      key = String(Date.now()); // новый ключ для повторной попытки
+    }
+    await sleep(500 + Math.random() * 700);
+    const res = charge(primary, amount, key);
+    if (!res.ok) continue;
+    ok = true;
+    // симуляция потери ответа: провайдер списал, до нас ответ не дошёл
+    if (Math.random() < 0.35) {
+      log(primary.name, key, amount, 'ответ потерян (таймаут)');
+      ok = false;
+    }
+  }
+
+  // фоллбэк на резервный провайдер
+  if (!ok) {
+    key = String(Date.now());
+    await sleep(400 + Math.random() * 600);
+    const res = charge(backup, amount, key);
+    ok = res.ok;
+  }
+
+  if (ok) {
+    idempotencyStore.set(key, amount); // регистрируем завершённый платёж
+    $status.className = 'status ok';
+    $status.textContent = '✅ Оплата прошла: ' + fmt(amount) + ' ₽';
+  } else {
+    $status.className = 'status err';
+    $status.textContent = '❌ Платёж не прошёл';
+  }
+}
+
+$pay.addEventListener('click', () => { pay(); });
+$amount.addEventListener('keydown', e => { if (e.key === 'Enter') pay(); });
+</script>
+
+
+</body><div id="in-page-channel-node-id-v2" data-channel-name="in_page_channel_9s6Ltq" data-channel-owner-id="552e45a0c44c8129391356b2c6618acd"></div></html>
